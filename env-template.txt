@@ -1,0 +1,20 @@
+# Copia questo file in ".env" e riempi i valori
+
+# API Keys
+GEMINI_API_KEY=incolla_qui_la_tua_chiave_gemini
+GROQ_API_KEY=incolla_qui_la_tua_chiave_groq
+TAVILY_API_KEY=incolla_qui_la_tua_chiave_tavily
+
+# Motore per lo step 2 (profilo utente + ottimizzazione prompt): "groq" oppure "gemini"
+PROFILE_ENGINE=groq
+
+# Motore per interpretare i risultati Tavily e strutturarli in JSON: "groq" oppure "gemini"
+# Se non impostato, usa lo stesso valore di PROFILE_ENGINE
+INTERPRETER_ENGINE=groq
+
+# Ricerca eventi
+EVENT_LOCATION=Inserisci_qui_la_tua_località
+SEARCH_RADIUS_DAYS=14
+
+# Google Calendar
+GOOGLE_CALENDAR_ID=primary
