@@ -1,0 +1,19 @@
+version: "3.8"
+
+services:
+  event-tracker:
+    build: .
+    container_name: ai-event-tracker
+    restart: unless-stopped
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - PROFILE_ENGINE=${PROFILE_ENGINE:-groq}
+      - EVENT_LOCATION=${EVENT_LOCATION:-}
+      - SEARCH_RADIUS_DAYS=${SEARCH_RADIUS_DAYS:-14}
+      - GOOGLE_CALENDAR_ID=${GOOGLE_CALENDAR_ID:-primary}
+      - DB_PATH=/data/eventi.db
+      - GOOGLE_CREDENTIALS_PATH=/data/credentials.json
+      - GOOGLE_TOKEN_PATH=/data/token.json
+    volumes:
+      - ./data:/data   # persistenza DB SQLite + credenziali Google

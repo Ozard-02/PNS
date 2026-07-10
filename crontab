@@ -1,0 +1,2 @@
+# Esegue lo script ogni giorno alle 07:00, log su stdout catturato da Docker
+0 7 * * * cd /app && /usr/local/bin/python /app/main.py >> /proc/1/fd/1 2>> /proc/1/fd/2
