@@ -9,6 +9,10 @@ import os
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
+# --- Ricerca eventi ---
+LOCATION = os.getenv("EVENT_LOCATION", "")
+SEARCH_RADIUS_DAYS = int(os.getenv("SEARCH_RADIUS_DAYS", "14"))
+
 # --- Scelta del "motore" per lo step 2 (profilo utente + ottimizzazione prompt) ---
 # Valori possibili: "gemini" oppure "groq"
 PROFILE_ENGINE = os.getenv("PROFILE_ENGINE", "groq").lower()
