@@ -1,4 +1,4 @@
 .env
-./data/credentials.json
+data/
 __pycache__/
 .venv/
