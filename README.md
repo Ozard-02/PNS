@@ -1,137 +1,140 @@
 # AI Event & Concert Tracker
 
-Sistema automatico che ogni giorno cerca eventi/concerti vicino a te, li valuta in base
-ai tuoi gusti (imparati dai tuoi feedback) e li inserisce su Google Calendar.
+Automated pipeline that searches for local events and concerts, scores them against a
+learned user profile, and pushes matches to Google Calendar. Runs daily via cron inside
+a Docker container.
 
-## Architettura
+## How it works
 
 ```
-                    ┌─────────────────────────────────┐
-                    │  STEP 2 - "Offline" (no internet)│
-   SQLite  ───────► │  Groq API oppure Gemini no-search│ ───► Profilo Utente
-  (feedback)         └─────────────────────────────────┘         (testo)
-                                                                     │
-                                                                     ▼
-                    ┌─────────────────────────────────┐
-                    │  STEP 3 - Online                 │
-                    │  Gemini + Google Search Grounding │ ───► Lista eventi JSON
-                    └─────────────────────────────────┘
-                                                                     │
-                                                                     ▼
-                                                          SQLite (salva, evita duplicati)
-                                                                     │
-                                                                     ▼
-                                                          Google Calendar (crea eventi)
+Cron (daily)
+  -> profile_engine   : reads feedback history from SQLite, generates an updated
+                         user-preference summary (Groq or Gemini, no web access)
+  -> search_client     : Tavily searches the web for events, then an LLM (Groq or
+                          Gemini) structures the raw results into JSON, scored against
+                          the user profile
+  -> db                : new events are stored, duplicates are skipped
+  -> calendar_client    : new events are pushed to Google Calendar
 ```
 
-Il modulo dello **Step 2** (`profile_engine.py`) è intercambiabile tramite la variabile
-`PROFILE_ENGINE` nel file `.env`:
-- `groq` → usa Groq API (free tier, modelli Llama/Mistral) — API separata da Google
-- `gemini` → usa Gemini stesso ma con una seconda chiamata SENZA il tool di search
+The scoring engine improves over time: correcting an event's score through the feedback
+CLI feeds back into the next day's profile generation.
 
-Entrambe le opzioni in questo step non hanno accesso a internet: lavorano solo sui dati
-di feedback che leggono dal database SQLite.
+## Requirements
+
+- Docker and Docker Compose
+- Gemini API key (https://aistudio.google.com/apikey)
+- Groq API key (https://console.groq.com/keys) - used for profile generation and/or
+  result interpretation, selectable independently via env vars
+- Tavily API key (https://tavily.com) - web search, free tier does not require billing
+- A Google Cloud project with the Calendar API enabled, plus an OAuth2 client
+  (Desktop app type)
 
 ## Setup
 
-### 1. Chiavi API
+1. Copy the environment template and fill in the values:
 
-**Gemini** (ricerca eventi): https://aistudio.google.com/apikey → crea una chiave gratuita.
+   ```bash
+   cp .env.example .env
+   ```
 
-**Groq** (opzionale, se scegli `PROFILE_ENGINE=groq`): https://console.groq.com/keys →
-crea una chiave gratuita.
+2. Create OAuth2 credentials for Google Calendar in the Google Cloud Console
+   (APIs & Services -> Credentials -> Create Credentials -> OAuth client ID -> Desktop
+   app). Download the JSON and save it as `data/credentials.json`.
 
-### 2. Google Calendar — credenziali OAuth2
+3. Run the OAuth flow once, locally, to generate `data/token.json` (this requires a
+   browser and cannot be done inside the container):
 
-1. Vai su https://console.cloud.google.com/ → crea un progetto (o usane uno esistente)
-2. Abilita la **Google Calendar API**
-3. Vai su "Credenziali" → "Crea credenziali" → "ID client OAuth" → tipo "App desktop"
-4. Scarica il file JSON e rinominalo `credentials.json`
-5. Mettilo nella cartella `./data/` (verrà montata nel container)
+   ```bash
+   pip install -r requirements.txt
+   python -c "from calendar_client import _get_credentials; _get_credentials()"
+   ```
 
-### 3. Primo avvio — autenticazione Calendar (una tantum)
+4. Build and start the container:
 
-L'autenticazione OAuth richiede un browser la prima volta. Il modo più semplice è
-eseguirla **fuori da Docker**, in locale, una volta sola, per generare `token.json`:
+   ```bash
+   docker compose up -d --build
+   ```
 
-```bash
-cd app
-pip install -r ../requirements.txt
-python -c "from calendar_client import _get_credentials; _get_credentials()"
-```
+The container runs `cron -f` in the foreground and executes `main.py` daily at 07:00
+(timezone set in the Dockerfile).
 
-Si aprirà il browser, farai login con l'account Google del calendario di destinazione,
-e verrà creato `token.json`. Copia sia `credentials.json` che `token.json` nella
-cartella `./data/` prima di avviare il container Docker (che non ha un browser).
-
-### 4. Configurazione
-
-```bash
-cp .env.example .env
-nano .env   # inserisci le tue chiavi API
-```
-
-### 5. Build e avvio
-
-```bash
-docker compose up -d --build
-```
-
-Il container resta sempre attivo (`cron -f`) ed esegue `main.py` ogni giorno alle 07:00
-(fuso orario Europe/Rome, configurabile nel Dockerfile).
-
-### 6. Log
-
-```bash
-docker logs -f ai-event-tracker
-```
-
-### 7. Test manuale (senza aspettare il cron)
+## Manual run
 
 ```bash
 docker exec -it ai-event-tracker python /app/main.py
 ```
 
-## Feedback loop — correggere i punteggi
+## Feedback loop
 
-Per insegnare al sistema i tuoi gusti reali, correggi il punteggio di un evento già
-inserito:
+Correct a predicted score to teach the system your actual preferences:
 
 ```bash
-# Vedi gli ultimi eventi con il loro ID
 docker exec -it ai-event-tracker python /app/feedback_cli.py --list
-
-# Correggi il punteggio dell'evento con id=12 a 8.5/10
-docker exec -it ai-event-tracker python /app/feedback_cli.py --set 12 8.5
+docker exec -it ai-event-tracker python /app/feedback_cli.py --set <event_id> <score>
 ```
 
-Il giorno successivo, lo Step 2 leggerà questo feedback e aggiornerà il profilo utente
-di conseguenza, rendendo le previsioni future più accurate.
+The next run reads this feedback and adjusts the generated user profile accordingly.
 
-## Struttura file
+## Local testing without Docker
 
-```
-event-tracker/
-├── app/
-│   ├── config.py          # configurazione centralizzata (env vars)
-│   ├── db.py               # SQLite: schema e funzioni CRUD
-│   ├── profile_engine.py   # Step 2: profilo utente (Groq o Gemini no-search)
-│   ├── search_client.py    # Step 3: ricerca eventi (Gemini + Google Search)
-│   ├── calendar_client.py  # Step 5: integrazione Google Calendar
-│   ├── feedback_cli.py     # utility CLI per registrare i feedback
-│   └── main.py             # orchestratore, eseguito dal cron
-├── Dockerfile
-├── docker-compose.yml
-├── crontab
-├── requirements.txt
-└── .env.example
+```bash
+pip install -r requirements.txt
+export GEMINI_API_KEY="..."
+export TAVILY_API_KEY="..."
+export GROQ_API_KEY="..."
+python test_search_locale.py
 ```
 
-## Note sui costi/limiti free tier
+This exercises only the search/interpretation step, without touching the database or
+Google Calendar.
 
-- **Gemini 2.5 Flash**: free tier con limiti di richieste al giorno — verifica i limiti
-  aggiornati su https://ai.google.dev/pricing (il Search Grounding ha una quota gratuita
-  separata più bassa delle richieste normali)
-- **Groq**: free tier generoso per richieste al minuto/giorno — verifica su
-  https://console.groq.com/docs/rate-limits
-- **Google Calendar API**: gratuita entro quote molto ampie per uso personale
+## Configuration reference
+
+| Variable | Description | Default |
+|---|---|---|
+| `GEMINI_API_KEY` | Gemini API key | - |
+| `GROQ_API_KEY` | Groq API key | - |
+| `TAVILY_API_KEY` | Tavily API key | - |
+| `PROFILE_ENGINE` | Backend for profile generation: `groq` or `gemini` | `groq` |
+| `INTERPRETER_ENGINE` | Backend for structuring search results: `groq` or `gemini` | value of `PROFILE_ENGINE` |
+| `GEMINI_SEARCH_MODEL` | Gemini model used where applicable | `gemini-flash-latest` |
+| `GEMINI_PROFILE_MODEL` | Gemini model used for profile/interpretation | `gemini-flash-latest` |
+| `GROQ_MODEL` | Groq model used for profile/interpretation | `llama-3.3-70b-versatile` |
+| `EVENT_LOCATION` | Location string used in search queries | - |
+| `SEARCH_RADIUS_DAYS` | How many days ahead to search | `14` |
+| `TAVILY_MAX_RESULTS` | Max results per Tavily search | `10` |
+| `GOOGLE_CALENDAR_ID` | Target calendar ID | `primary` |
+| `DB_PATH` | SQLite file path inside the container | `/data/eventi.db` |
+
+## Project layout
+
+```
+app/
+  config.py           configuration from environment variables
+  db.py               SQLite schema and CRUD helpers
+  profile_engine.py    reads feedback history, generates the user profile
+  search_client.py     Tavily search + LLM-based structuring, with date validation
+  calendar_client.py   Google Calendar integration
+  feedback_cli.py       CLI to record user feedback on past events
+  main.py               orchestrates the daily run
+Dockerfile
+docker-compose.yml
+crontab
+requirements.txt
+test_search_locale.py   standalone search test, no DB/Calendar side effects
+```
+
+## Notes
+
+- Free-tier rate limits for Gemini, Groq, and Tavily change periodically; check each
+  provider's documentation if requests start failing with 429 errors.
+- Search Grounding on the Gemini API requires a billing-enabled Google Cloud project
+  even for its free monthly allocation; this project avoids that requirement by using
+  Tavily for search instead.
+- `search_client.py` validates every event's date against the requested search window
+  and discards anything out of range or unparsable, independent of what the LLM returns.
+
+## License
+
+MIT

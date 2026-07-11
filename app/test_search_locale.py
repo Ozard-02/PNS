@@ -37,7 +37,7 @@ def main():
         "mostra scarso interesse per eventi di musica classica."
     )
 
-    print("Chiamata a Gemini con Google Search Grounding in corso...\n")
+    print("Chiamata in corso...\n")
     eventi = cerca_eventi(profilo_di_test)
 
     print(f"\n--- Trovati {len(eventi)} eventi ---\n")
