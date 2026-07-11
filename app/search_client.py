@@ -104,7 +104,7 @@ def _build_prompt_interpretazione(profilo_utente: str, risultati_grezzi: str) ->
     oggi = datetime.now().strftime("%Y-%m-%d")
     fine = (datetime.now() + timedelta(days=SEARCH_RADIUS_DAYS)).strftime("%Y-%m-%d")
 
-    return f"""Sei un assistente che estrae informazioni su eventi/concerti da risultati di
+    return f"""Sei un assistente che estrae informazioni su eventi pubblici da risultati di
 ricerca web grezzi e li valuta in base al profilo di un utente.
 
 DATA DI OGGI: {oggi}
@@ -114,6 +114,8 @@ REGOLA FONDAMENTALE SULLE DATE:
 - Scarta OGNI evento la cui data è precedente a {oggi} (evento già passato) o successiva a {fine}.
 - Le pagine web possono contenere date di edizioni passate, calendari generici o eventi
   di mesi diversi: verifica sempre l'anno e il giorno esatto prima di includere un evento.
+- Se una pagina contiene più date, identifica quella riferita allo specifico evento.
+- In caso di dubbio sulla data, scarta l'evento.
 
 Profilo storico dell'utente (usalo per calcolare il punteggio di gradimento):
 {profilo_utente}
@@ -121,10 +123,34 @@ Profilo storico dell'utente (usalo per calcolare il punteggio di gradimento):
 Risultati grezzi della ricerca web:
 {risultati_grezzi}
 
-Analizza questi risultati ed estrai SOLO gli eventi reali (concerti, spettacoli, eventi
-culturali) con data e luogo chiaramente identificabili E compresi nell'intervallo valido
-sopra indicato. Per ognuno calcola un punteggio di gradimento da 1 a 10 basandoti sul
-profilo utente.
+Analizza questi risultati ed estrai SOLO eventi pubblici reali con data e luogo
+chiaramente identificabili e compresi nell'intervallo valido sopra indicato.
+
+Sono considerati eventi validi, ad esempio:
+- concerti;
+- spettacoli teatrali;
+- musical;
+- cabaret;
+- festival;
+- sagre;
+- fiere;
+- mostre;
+- eventi culturali;
+- eventi enogastronomici;
+- visite guidate;
+- laboratori;
+- attività esperienziali;
+- manifestazioni aperte al pubblico.
+
+Procedura obbligatoria per ogni possibile evento:
+1. Individua un possibile evento.
+2. Verifica che siano presenti una data completa (giorno, mese e anno) e un luogo chiaramente identificabile.
+3. Verifica che la data sia compresa tra {oggi} e {fine}.
+4. Se manca uno qualsiasi dei requisiti precedenti, scarta l'evento.
+5. Se più risultati descrivono lo stesso evento, mantieni una sola occorrenza scegliendo quella con le informazioni più complete.
+6. Solo dopo assegna un punteggio di gradimento da 1 a 10 basandoti sul profilo utente.
+
+Non inventare informazioni. Se data, luogo o tipologia dell'evento non sono chiaramente presenti nei risultati, scarta l'evento.
 
 {RESPONSE_SCHEMA_DESCRIPTION}
 """
