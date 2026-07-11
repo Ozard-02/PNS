@@ -90,6 +90,18 @@ def get_eventi_senza_calendario():
         return [dict(row) for row in cur.fetchall()]
 
 
+def get_eventi_senza_feedback(order: str = "ASC"):
+    """Ritorna tutti gli eventi con punteggio_utente ancora NULL (da revisionare)."""
+    order = "ASC" if order.upper() != "DESC" else "DESC"
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"""SELECT * FROM eventi
+                WHERE punteggio_utente IS NULL
+                ORDER BY data {order}"""
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
 def get_feedback_recente(limit: int = 50):
     """Ritorna gli eventi con un punteggio_utente esplicito (feedback), i più recenti prima."""
     with get_conn() as conn:

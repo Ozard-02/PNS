@@ -114,9 +114,6 @@ REGOLA FONDAMENTALE SULLE DATE:
 - Scarta OGNI evento la cui data è precedente a {oggi} (evento già passato) o successiva a {fine}.
 - Le pagine web possono contenere date di edizioni passate, calendari generici o eventi
   di mesi diversi: verifica sempre l'anno e il giorno esatto prima di includere un evento.
-- Se un risultato non riporta una data chiara e verificabile nell'intervallo valido, NON
-  includerlo, anche se sembra rilevante.
-- In caso di dubbio sulla data, escludi l'evento piuttosto che includerlo con una data incerta.
 
 Profilo storico dell'utente (usalo per calcolare il punteggio di gradimento):
 {profilo_utente}
@@ -141,7 +138,22 @@ def _estrai_json(testo: str) -> list[dict]:
         if testo.startswith("json"):
             testo = testo[4:]
     testo = testo.strip()
-    return json.loads(testo)
+
+    try:
+        return json.loads(testo)
+    except json.JSONDecodeError:
+        # Fallback: la risposta potrebbe essere troncata (max_tokens raggiunto).
+        # Prova a recuperare l'ultimo oggetto completo dell'array.
+        ultimo_oggetto_chiuso = testo.rfind("},")
+        if ultimo_oggetto_chiuso != -1:
+            testo_recuperato = testo[:ultimo_oggetto_chiuso + 1] + "]"
+            try:
+                eventi_parziali = json.loads(testo_recuperato)
+                print(f"[search_client] JSON troncato: recuperati {len(eventi_parziali)} eventi completi su risposta incompleta.")
+                return eventi_parziali
+            except json.JSONDecodeError:
+                pass
+        raise
 
 
 def _interpreta_con_gemini(prompt: str) -> str:

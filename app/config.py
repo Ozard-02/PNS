@@ -32,7 +32,7 @@ INTERPRETER_ENGINE = os.getenv("INTERPRETER_ENGINE", PROFILE_ENGINE).lower()
 # --- Ricerca eventi ---
 LOCATION = os.getenv("EVENT_LOCATION", "")
 SEARCH_RADIUS_DAYS = int(os.getenv("SEARCH_RADIUS_DAYS", "14"))
-TAVILY_MAX_RESULTS = int(os.getenv("TAVILY_MAX_RESULTS", "10"))
+TAVILY_MAX_RESULTS = int(os.getenv("TAVILY_MAX_RESULTS", "05"))
 
 # --- Database ---
 DB_PATH = os.getenv("DB_PATH", "/data/eventi.db")

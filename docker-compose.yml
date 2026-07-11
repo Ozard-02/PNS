@@ -13,5 +13,7 @@ services:
       - DB_PATH=/data/eventi.db
       - GOOGLE_CREDENTIALS_PATH=/data/credentials.json
       - GOOGLE_TOKEN_PATH=/data/token.json
+      - TAVILY_MAX_RESULTS=${TAVILY_MAX_RESULTS:-6}
+
     volumes:
       - ./data:/data   # persistenza DB SQLite + credenziali Google
