@@ -1,4 +1,9 @@
 .env
+.env.*
 data/
 __pycache__/
 .venv/
+*.db
+*.sqlite
+credentials.json
+token.json
