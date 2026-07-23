@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS eventi (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     titolo TEXT NOT NULL,
     data TEXT NOT NULL,
+    data_fine TEXT DEFAULT NULL,
     luogo TEXT,
     link_info TEXT,
     genere_categoria TEXT,
@@ -31,6 +32,11 @@ CREATE TABLE IF NOT EXISTS profilo_storico (
 );
 """
 
+MIGRATIONS = [
+    "ALTER TABLE eventi ADD COLUMN data_fine TEXT DEFAULT NULL",
+    "ALTER TABLE eventi ADD COLUMN feedback_updated_at TEXT DEFAULT NULL",
+]
+
 
 @contextmanager
 def get_conn():
@@ -46,6 +52,11 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        for migrazione in MIGRATIONS:
+            try:
+                conn.execute(migrazione)
+            except sqlite3.OperationalError:
+                pass
 
 
 def insert_evento(evento: dict) -> bool:
@@ -54,12 +65,13 @@ def insert_evento(evento: dict) -> bool:
         try:
             conn.execute(
                 """INSERT INTO eventi
-                   (titolo, data, luogo, link_info, genere_categoria,
+                   (titolo, data, data_fine, luogo, link_info, genere_categoria,
                     punteggio_gemini, motivazione_punteggio, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     evento.get("titolo"),
                     evento.get("data"),
+                    evento.get("data_fine"),
                     evento.get("luogo"),
                     evento.get("link_info"),
                     evento.get("genere_categoria"),
@@ -102,6 +114,39 @@ def get_eventi_senza_feedback(order: str = "ASC"):
         return [dict(row) for row in cur.fetchall()]
 
 
+def get_feedback_statistics():
+    """Ritorna statistiche aggregate per genere basate sui feedback utente."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """SELECT
+                   genere_categoria,
+                   COUNT(*) as count,
+                   ROUND(AVG(punteggio_gemini), 2) as avg_ai,
+                   ROUND(AVG(punteggio_utente), 2) as avg_user,
+                   ROUND(AVG(punteggio_utente - punteggio_gemini), 2) as avg_correzione,
+                   MIN(punteggio_utente) as min_user,
+                   MAX(punteggio_utente) as max_user,
+                   MAX(created_at) as ultimo_feedback
+               FROM eventi
+               WHERE punteggio_utente IS NOT NULL
+               GROUP BY genere_categoria
+               ORDER BY count DESC"""
+        )
+        stats = [dict(row) for row in cur.fetchall()]
+
+        cur2 = conn.execute(
+            """SELECT
+                   COUNT(*) as totale_feedback,
+                   ROUND(AVG(punteggio_gemini), 2) as avg_ai_globale,
+                   ROUND(AVG(punteggio_utente), 2) as avg_user_globale,
+                   ROUND(AVG(punteggio_utente - punteggio_gemini), 2) as avg_correzione_globale
+               FROM eventi
+               WHERE punteggio_utente IS NOT NULL"""
+        )
+        totali = dict(cur2.fetchone())
+        return {"per_genere": stats, "totali": totali}
+
+
 def get_feedback_recente(limit: int = 50):
     """Ritorna gli eventi con un punteggio_utente esplicito (feedback), i più recenti prima."""
     with get_conn() as conn:
@@ -119,9 +164,34 @@ def get_feedback_recente(limit: int = 50):
 def set_punteggio_utente(evento_id: int, punteggio: float):
     with get_conn() as conn:
         conn.execute(
-            "UPDATE eventi SET punteggio_utente = ? WHERE id = ?",
-            (punteggio, evento_id),
+            "UPDATE eventi SET punteggio_utente = ?, feedback_updated_at = ? WHERE id = ?",
+            (punteggio, datetime.now(timezone.utc).isoformat(), evento_id),
         )
+
+
+def get_feedback_da_data(data_da: str) -> list[dict]:
+    """Ritorna tutti i feedback con punteggio_utente impostato dopo una certa data."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """SELECT titolo, genere_categoria, punteggio_gemini, punteggio_utente, data,
+                      motivazione_punteggio, luogo
+               FROM eventi
+               WHERE punteggio_utente IS NOT NULL
+                 AND (feedback_updated_at IS NOT NULL AND feedback_updated_at > ?)
+               ORDER BY feedback_updated_at""",
+            (data_da,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
+def get_data_ultimo_feedback() -> str | None:
+    """Ritorna il timestamp ISO del feedback_updated_at più recente, o None."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT MAX(feedback_updated_at) as ultimo FROM eventi WHERE punteggio_utente IS NOT NULL"
+        )
+        row = cur.fetchone()
+        return row["ultimo"] if row and row["ultimo"] else None
 
 
 def salva_profilo(contenuto: str):

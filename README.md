@@ -8,13 +8,19 @@ a Docker container.
 
 ```
 Cron (daily)
-  -> profile_engine   : reads feedback history from SQLite, generates an updated
-                         user-preference summary (Groq or Gemini, no web access)
+  -> profile_engine   : reads feedback history from SQLite, aggregates per-genre
+                         statistics, generates an updated user-preference summary
+                         (Groq or Gemini, no web access), enriched with seasonal
+                         context and correction-direction analysis (↑/↓/→)
   -> search_client     : Tavily searches the web for events, then an LLM (Groq or
                           Gemini) structures the raw results into JSON, scored against
-                          the user profile
-  -> db                : new events are stored, duplicates are skipped
-  -> calendar_client    : new events are pushed to Google Calendar
+                          the user profile; multi-date events (same title + venue) are
+                          merged — consecutive dates become a single multi-day event,
+                          non-consecutive ones are numbered (1/N)
+  -> db                : new events are stored with optional data_fine column for
+                          multi-day events, duplicates are skipped
+  -> calendar_client    : new events are pushed to Google Calendar; multi-day events
+                          are created as all-day blocks spanning data → data_fine
 ```
 
 The scoring engine improves over time: correcting an event's score through the feedback
@@ -113,9 +119,11 @@ Google Calendar.
 app/
   config.py           configuration from environment variables
   db.py               SQLite schema and CRUD helpers
-  profile_engine.py    reads feedback history, generates the user profile
+  profile_engine.py    reads feedback history + per-genre statistics, generates
+                         the user profile with seasonal context
   search_client.py     Tavily search + LLM-based structuring, with date validation
-  calendar_client.py   Google Calendar integration
+                         and multi-date event merging
+  calendar_client.py   Google Calendar integration, supports multi-day all-day events
   feedback_cli.py       CLI to record user feedback on past events
   main.py               orchestrates the daily run
 Dockerfile
@@ -134,6 +142,10 @@ test_search_locale.py   standalone search test, no DB/Calendar side effects
   Tavily for search instead.
 - `search_client.py` validates every event's date against the requested search window
   and discards anything out of range or unparsable, independent of what the LLM returns.
+- **Multi-date merging**: after date validation, events with the same title (fuzzy
+  match, 0.95 threshold) and venue are grouped. If their dates form a consecutive
+  block, they become a single multi-day event (`data_fine` set). Otherwise they are
+  kept as separate calendar events with a `(1/N)` suffix on the title.
 
 ## License
 

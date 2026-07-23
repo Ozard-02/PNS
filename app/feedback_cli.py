@@ -16,6 +16,7 @@ from db import (
     init_db,
     get_eventi_senza_feedback,
 )
+from profile_engine import aggiorna_profilo_da_feedback
 
 
 def lista_eventi(limit=20):
@@ -110,6 +111,8 @@ def review_loop(order: str = "asc"):
             break
 
     print(f"\nRevisione completata: {valutati} valutati, {saltati} saltati su {totale}.")
+    if valutati > 0:
+        aggiorna_profilo_da_feedback()
 
 
 def main():

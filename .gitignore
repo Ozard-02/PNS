@@ -7,3 +7,6 @@ __pycache__/
 *.sqlite
 credentials.json
 token.json
+data/profilo_utente.txt
+data/profilo_storico.txt
+AGENTS.md

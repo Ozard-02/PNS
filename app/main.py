@@ -47,9 +47,9 @@ def main():
     # --- Step 4: salvataggio nel DB (evitando duplicati) ---
     nuovi = 0
     for evento in eventi_trovati:
-        # normalizza chiave per il DB (punteggio_gemini invece di punteggio_predetto)
         evento_db = dict(evento)
         evento_db["punteggio_gemini"] = evento.get("punteggio_predetto")
+        evento_db["data_fine"] = evento.get("data_fine")
         if insert_evento(evento_db):
             nuovi += 1
     log(f"Nuovi eventi salvati nel DB: {nuovi} (gli altri erano già presenti)")

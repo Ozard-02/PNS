@@ -32,10 +32,14 @@ INTERPRETER_ENGINE = os.getenv("INTERPRETER_ENGINE", PROFILE_ENGINE).lower()
 # --- Ricerca eventi ---
 LOCATION = os.getenv("EVENT_LOCATION", "")
 SEARCH_RADIUS_DAYS = int(os.getenv("SEARCH_RADIUS_DAYS", "14"))
-TAVILY_MAX_RESULTS = int(os.getenv("TAVILY_MAX_RESULTS", "05"))
+TAVILY_MAX_RESULTS = int(os.getenv("TAVILY_MAX_RESULTS", "5"))
 
 # --- Database ---
 DB_PATH = os.getenv("DB_PATH", "/data/eventi.db")
+
+# --- Profilo utente (file .txt) ---
+PROFILE_FILE_PATH = os.getenv("PROFILE_FILE_PATH", "/data/profilo_utente.txt")
+PROFILE_HISTORY_PATH = os.getenv("PROFILE_HISTORY_PATH", "/data/profilo_storico.txt")
 
 # --- Google Calendar ---
 GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "primary")

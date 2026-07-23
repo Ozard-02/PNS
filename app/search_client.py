@@ -14,7 +14,9 @@ che richiede un account Google Cloud con billing collegato anche solo per la quo
 Questo approccio funziona interamente su free tier "puri", senza dover collegare billing
 a nessun account.
 """
+import difflib
 import json
+import re
 from datetime import datetime, timedelta
 
 from tavily import TavilyClient
@@ -30,6 +32,26 @@ from config import (
     GROQ_API_KEY,
     GROQ_MODEL,
 )
+
+MAX_INPUT_CHARS = 25000
+
+
+def _limita_input(testo: str) -> str:
+    if len(testo) <= MAX_INPUT_CHARS:
+        return testo
+    lines = testo.split("\n")
+    troncato = []
+    lunghezza = 0
+    for line in lines:
+        lunghezza += len(line) + 1
+        if lunghezza > MAX_INPUT_CHARS:
+            break
+        troncato.append(line)
+    n_tagliati = lines.count("--- Risultato") - troncato.count("--- Risultato")
+    if n_tagliati > 0:
+        print(f"[search_client] Input troncato a ~{MAX_INPUT_CHARS} caratteri: scartati {n_tagliati} risultati per rispettare il limite TPM di Groq.")
+    return "\n".join(troncato)
+
 
 RESPONSE_SCHEMA_DESCRIPTION = """
 Rispondi ESCLUSIVAMENTE con un array JSON valido (nessun testo prima o dopo, nessun
@@ -52,38 +74,47 @@ un array vuoto: []. NON inventare eventi che non sono chiaramente menzionati nei
 """
 
 
-def _build_query() -> str:
+def _build_queries() -> list[str]:
     oggi_dt = datetime.now()
     fine_dt = oggi_dt + timedelta(days=SEARCH_RADIUS_DAYS)
     oggi = oggi_dt.strftime("%Y-%m-%d")
     fine = fine_dt.strftime("%Y-%m-%d")
-    return (
-        f"concerti eventi spettacoli {LOCATION} "
-        f"dal {oggi} al {fine} ({oggi_dt.strftime('%B %Y')})"
-    )
+    mese_anno = oggi_dt.strftime('%B %Y')
+    return [
+        f"concerti spettacoli musical teatro {LOCATION} {mese_anno} dal {oggi} al {fine}",
+        f"eventi underground indie alternativi nicchia piccoli locali {LOCATION} {mese_anno}",
+        f"feste sagre mercatini mostre gratuiti ingresso libero {LOCATION} {mese_anno}",
+    ]
 
 
 def _cerca_con_tavily() -> list[dict]:
-    """Fase A: interroga Tavily e ritorna i risultati grezzi (titolo, url, snippet)."""
+    """Fase A: interroga Tavily con più query, aggrega e deduplica per URL."""
     client = TavilyClient(api_key=TAVILY_API_KEY)
-    query = _build_query()
+    visti = set()
+    risultati_totali = []
 
-    risposta = client.search(
-        query=query,
-        max_results=TAVILY_MAX_RESULTS,
-        search_depth="advanced",
-        include_answer=False,
-    )
+    for query in _build_queries():
+        try:
+            risposta = client.search(
+                query=query,
+                max_results=TAVILY_MAX_RESULTS,
+                search_depth="advanced",
+                include_answer=False,
+            )
+            for r in risposta.get("results", []):
+                url = r.get("url", "")
+                if url not in visti:
+                    visti.add(url)
+                    risultati_totali.append({
+                        "titolo_pagina": r.get("title", ""),
+                        "url": url,
+                        "contenuto": r.get("content", ""),
+                    })
+        except Exception as e:
+            print(f"[search_client] Errore nella query '{query[:50]}...': {e}")
+            continue
 
-    risultati = risposta.get("results", [])
-    return [
-        {
-            "titolo_pagina": r.get("title", ""),
-            "url": r.get("url", ""),
-            "contenuto": r.get("content", ""),
-        }
-        for r in risultati
-    ]
+    return risultati_totali
 
 
 def _formatta_risultati_grezzi(risultati: list[dict]) -> str:
@@ -117,7 +148,8 @@ REGOLA FONDAMENTALE SULLE DATE:
 - Se una pagina contiene più date, identifica quella riferita allo specifico evento.
 - In caso di dubbio sulla data, scarta l'evento.
 
-Profilo storico dell'utente (usalo per calcolare il punteggio di gradimento):
+Profilo storico dell'utente (usalo per calcolare il punteggio di gradimento E per
+preferire eventi che corrispondono ai suoi gusti descritti):
 {profilo_utente}
 
 Risultati grezzi della ricerca web:
@@ -127,20 +159,26 @@ Analizza questi risultati ed estrai SOLO eventi pubblici reali con data e luogo
 chiaramente identificabili e compresi nell'intervallo valido sopra indicato.
 
 Sono considerati eventi validi, ad esempio:
-- concerti;
-- spettacoli teatrali;
-- musical;
-- cabaret;
-- festival;
-- sagre;
-- fiere;
-- mostre;
-- eventi culturali;
+- concerti (grandi e piccoli);
+- spettacoli teatrali e musical;
+- cabaret e comedy;
+- festival, sagre e fiere;
+- mostre ed eventi culturali;
 - eventi enogastronomici;
-- visite guidate;
-- laboratori;
-- attività esperienziali;
-- manifestazioni aperte al pubblico.
+- visite guidate, laboratori e attività esperienziali;
+- manifestazioni aperte al pubblico;
+- jam session, dj set, serate in locali;
+- reading, presentazioni, incontri;
+- eventi di quartiere, mercatini, ingresso libero.
+
+VARIETÀ E NICCHIA:
+- Cerca di includere una MISCELA di eventi: grandi produzioni MA ANCHE eventi
+  underground, indipendenti, di nicchia, in piccoli locali, a basso costo o gratuiti.
+- Non limitarti ai soli eventi mainstream: prediligi quelli che meglio
+  corrispondono al profilo utente sopra descritto.
+- Se il profilo utente accenna a preferenze per locali piccoli, atmosfere informali,
+  generi di nicchia, musica indipendente, eventi non commerciali o sottocultura,
+  DAI PRIORITÀ a quel tipo di eventi.
 
 Procedura obbligatoria per ogni possibile evento:
 1. Individua un possibile evento.
@@ -236,6 +274,159 @@ def _filtra_per_data_valida(eventi: list[dict]) -> list[dict]:
     return eventi_validi
 
 
+def _normalizza_testo(testo: str) -> str:
+    """Normalizza un testo per il matching: lowercase, strip, rimuovi punteggiatura."""
+    testo = (testo or "").strip().lower()
+    testo = re.sub(r"[^\w\s]", "", testo)
+    testo = re.sub(r"\s+", " ", testo).strip()
+    return testo
+
+
+def _titoli_simili(t1: str, t2: str, soglia: float = 0.95) -> bool:
+    """Confronta due titoli usando fuzzy matching."""
+    return difflib.SequenceMatcher(None, t1, t2).ratio() >= soglia
+
+
+def _date_sono_consecutive(date_list: list[str]) -> bool:
+    """Verifica che le date formino un blocco consecutivo (nessun gap > 1 giorno)."""
+    if len(date_list) <= 1:
+        return True
+    parsed = sorted(datetime.strptime(d, "%Y-%m-%d").date() for d in date_list)
+    for i in range(len(parsed) - 1):
+        if (parsed[i + 1] - parsed[i]).days != 1:
+            return False
+    return True
+
+
+def _merge_multi_date_events(eventi: list[dict]) -> list[dict]:
+    """
+    Raggruppa eventi con stesso titolo (fuzzy) e luogo in un unico evento multi-data
+    se le date sono consecutive. Se non consecutive, li numera (1/N, 2/N, ...).
+    """
+    if not eventi:
+        return []
+
+    # Costruisci gruppi per similarità
+    assegnati = [False] * len(eventi)
+    gruppi = []
+
+    for i, ev in enumerate(eventi):
+        if assegnati[i]:
+            continue
+        gruppo = [i]
+        assegnati[i] = True
+        norm_i = (
+            _normalizza_testo(ev.get("titolo")),
+            _normalizza_testo(ev.get("luogo")),
+        )
+        for j in range(i + 1, len(eventi)):
+            if assegnati[j]:
+                continue
+            ev_j = eventi[j]
+            norm_j = (
+                _normalizza_testo(ev_j.get("titolo")),
+                _normalizza_testo(ev_j.get("luogo")),
+            )
+            if (
+                _titoli_simili(norm_i[0], norm_j[0])
+                and norm_i[1] == norm_j[1]
+            ):
+                gruppo.append(j)
+                assegnati[j] = True
+        gruppi.append(gruppo)
+
+    risultati = []
+    for gruppo in gruppi:
+        if len(gruppo) == 1:
+            risultati.append(eventi[gruppo[0]])
+            continue
+
+        eventi_gruppo = [eventi[i] for i in gruppo]
+        # Raccogli tutte le date valide
+        date_valide = sorted(
+            set(e["data"] for e in eventi_gruppo if e.get("data"))
+        )
+
+        if len(date_valide) <= 1:
+            risultati.extend(eventi_gruppo)
+            continue
+
+        if _date_sono_consecutive(date_valide):
+            # Merge: singolo evento multi-data
+            base = dict(eventi_gruppo[0])
+            base["data"] = date_valide[0]
+            base["data_fine"] = date_valide[-1]
+            # Unisci link_info e motivazione dal primo più completo
+            migliori = sorted(eventi_gruppo, key=lambda e: len(e.get("motivazione_punteggio", "") or ""), reverse=True)
+            base["link_info"] = migliori[0].get("link_info", base.get("link_info"))
+            base["motivazione_punteggio"] = migliori[0].get("motivazione_punteggio", base.get("motivazione_punteggio"))
+            # Media dei punteggi
+            punteggi = [e["punteggio_predetto"] for e in eventi_gruppo if e.get("punteggio_predetto") is not None]
+            if punteggi:
+                base["punteggio_predetto"] = round(sum(punteggi) / len(punteggi), 1)
+            risultati.append(base)
+        else:
+            # Non consecutive: numera gli eventi
+            totale = len(eventi_gruppo)
+            for idx, e in enumerate(eventi_gruppo, 1):
+                e = dict(e)
+                e["titolo"] = f"{e['titolo']} ({idx}/{totale})"
+                risultati.append(e)
+
+    return risultati
+
+
+def _completezza_evento(e: dict) -> int:
+    """Quanti campi non vuoti ha un evento (più alto = più informativo)."""
+    return sum(1 for v in e.values() if v and str(v).strip())
+
+
+def _date_sovrapposte(a: dict, b: dict) -> bool:
+    """Due eventi hanno date sovrapposte? Gestisce anche multi-day."""
+    a_inizio = a.get("data", "")
+    a_fine = a.get("data_fine", "") or a_inizio
+    b_inizio = b.get("data", "")
+    b_fine = b.get("data_fine", "") or b_inizio
+    if not a_inizio or not b_inizio:
+        return False
+    return a_inizio <= b_fine and b_inizio <= a_fine
+
+
+def _deduplica_eventi(eventi: list[dict]) -> list[dict]:
+    """
+    Post-dedup: se due eventi hanno date sovrapposte, titoli e luoghi simili,
+    sono lo stesso evento con wording diverso. Tiene il più completo.
+    """
+    if len(eventi) < 2:
+        return eventi
+
+    da_tenere = []
+    for ev in eventi:
+        norm_titolo = _normalizza_testo(ev.get("titolo", ""))
+        norm_luogo = _normalizza_testo(ev.get("luogo", ""))
+        completo_ev = _completezza_evento(ev)
+
+        duplicato = False
+        for i, tenuto in enumerate(da_tenere):
+            norm_t = _normalizza_testo(tenuto.get("titolo", ""))
+            if not _titoli_simili(norm_titolo, norm_t, 0.8):
+                continue
+
+            norm_l = _normalizza_testo(tenuto.get("luogo", ""))
+            if not _date_sovrapposte(ev, tenuto) and not _titoli_simili(norm_luogo, norm_l, 0.7):
+                continue
+
+            duplicato = True
+            if completo_ev > _completezza_evento(tenuto):
+                da_tenere[i] = ev
+            break
+
+        if not duplicato:
+            da_tenere.append(ev)
+
+    return da_tenere
+
+
 def cerca_eventi(profilo_utente: str) -> list[dict]:
     """
     Punto di ingresso principale: esegue la ricerca web (Tavily) e poi l'interpretazione
@@ -249,9 +440,8 @@ def cerca_eventi(profilo_utente: str) -> list[dict]:
         return []
 
     # Fase B: interpretazione e strutturazione JSON
-    prompt = _build_prompt_interpretazione(
-        profilo_utente, _formatta_risultati_grezzi(risultati_grezzi)
-    )
+    risultati_formattati = _limita_input(_formatta_risultati_grezzi(risultati_grezzi))
+    prompt = _build_prompt_interpretazione(profilo_utente, risultati_formattati)
 
     if INTERPRETER_ENGINE == "groq":
         testo_risposta = _interpreta_con_groq(prompt)
@@ -278,4 +468,20 @@ def cerca_eventi(profilo_utente: str) -> list[dict]:
         f"[search_client] {len(eventi_filtrati)}/{len(eventi)} eventi passano "
         f"il filtro data (scartati quelli fuori range o con data non valida)."
     )
-    return eventi_filtrati
+
+    eventi_merged = _merge_multi_date_events(eventi_filtrati)
+    if len(eventi_merged) != len(eventi_filtrati):
+        pl = "e" if len(eventi_merged) == 1 else "i"
+        print(
+            f"[search_client] Uniti {len(eventi_filtrati) - len(eventi_merged)} eventi "
+            f"multi-data in {len(eventi_merged)} event{pl} finali."
+        )
+
+    eventi_deduplicati = _deduplica_eventi(eventi_merged)
+    if len(eventi_deduplicati) != len(eventi_merged):
+        print(
+            f"[search_client] Deduplicati {len(eventi_merged) - len(eventi_deduplicati)} eventi "
+            f"con titoli simili."
+        )
+
+    return eventi_deduplicati

@@ -4,6 +4,8 @@ Step 5 del workflow: inserimento eventi su Google Calendar.
 Usa OAuth2 (credentials.json + token.json persistiti su volume Docker).
 Al primo avvio va fatta l'autenticazione manuale una tantum (vedi README).
 """
+from datetime import datetime, timedelta
+
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -49,11 +51,24 @@ def crea_evento_calendario(evento: dict) -> str | None:
     service = _get_service()
 
     punteggio = evento.get("punteggio_gemini")
+    data_fine = evento.get("data_fine")
     titolo_calendario = f"[{punteggio}/10] {evento['titolo']}" if punteggio else evento["titolo"]
 
+    data_inizio = evento["data"]
+    if data_fine and data_fine != data_inizio:
+        # Evento multi-giorno: end date in Google Calendar è esclusiva, quindi +1 giorno
+        data_fine_dt = datetime.strptime(data_fine, "%Y-%m-%d").date()
+        end_date = (data_fine_dt + timedelta(days=1)).isoformat()
+        data_label = f"Date: dal {data_inizio} al {data_fine}"
+    else:
+        end_date = data_inizio
+        data_label = f"Data: {data_inizio}"
+
     descrizione = (
+        f"{data_label}\n"
         f"Genere: {evento.get('genere_categoria', 'N/D')}\n"
-        f"Motivazione punteggio: {evento.get('motivazione_punteggio', 'N/D')}\n"
+        f"Punteggio: {punteggio}/10\n"
+        f"Motivazione: {evento.get('motivazione_punteggio', 'N/D')}\n"
         f"Info/Biglietti: {evento.get('link_info', 'N/D')}"
     )
 
@@ -61,8 +76,8 @@ def crea_evento_calendario(evento: dict) -> str | None:
         "summary": titolo_calendario,
         "location": evento.get("luogo", ""),
         "description": descrizione,
-        "start": {"date": evento["data"]},  # evento "tutto il giorno"
-        "end": {"date": evento["data"]},
+        "start": {"date": data_inizio},
+        "end": {"date": end_date},
     }
 
     try:
