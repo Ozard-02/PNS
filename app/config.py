@@ -1,47 +1,16 @@
-"""
-Configurazione centralizzata del progetto.
-Tutti i valori sensibili vengono letti da variabili d'ambiente
-(impostate nel file .env / docker-compose.yml).
-"""
 import os
 
-# --- API Keys ---
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free")
 
-# --- Ricerca eventi ---
 LOCATION = os.getenv("EVENT_LOCATION", "")
 SEARCH_RADIUS_DAYS = int(os.getenv("SEARCH_RADIUS_DAYS", "14"))
+SEARCH_MAX_RESULTS = int(os.getenv("SEARCH_MAX_RESULTS", "5"))
 
-# --- Scelta del "motore" per lo step 2 (profilo utente + ottimizzazione prompt) ---
-# Valori possibili: "gemini" oppure "groq"
-PROFILE_ENGINE = os.getenv("PROFILE_ENGINE", "groq").lower()
-
-# --- Modelli ---
-GEMINI_SEARCH_MODEL = os.getenv("GEMINI_SEARCH_MODEL", "gemini-flash-latest")
-GEMINI_PROFILE_MODEL = os.getenv("GEMINI_PROFILE_MODEL", "gemini-flash-latest")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-
-# --- Tavily (ricerca web, free tier 1000 query/mese, no carta) ---
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
-
-# --- Modello usato per interpretare i risultati Tavily e strutturarli in JSON ---
-# Riusa lo stesso motore scelto per il profilo (gemini o groq), ma è configurabile a parte
-INTERPRETER_ENGINE = os.getenv("INTERPRETER_ENGINE", PROFILE_ENGINE).lower()
-
-# --- Ricerca eventi ---
-LOCATION = os.getenv("EVENT_LOCATION", "")
-SEARCH_RADIUS_DAYS = int(os.getenv("SEARCH_RADIUS_DAYS", "14"))
-TAVILY_MAX_RESULTS = int(os.getenv("TAVILY_MAX_RESULTS", "5"))
-
-# --- Database ---
 DB_PATH = os.getenv("DB_PATH", "/data/eventi.db")
 
-# --- Profilo utente (file .txt) ---
-PROFILE_FILE_PATH = os.getenv("PROFILE_FILE_PATH", "/data/profilo_utente.txt")
-PROFILE_HISTORY_PATH = os.getenv("PROFILE_HISTORY_PATH", "/data/profilo_storico.txt")
+QUERY_TEMPLATES_PATH = os.getenv("QUERY_TEMPLATES_PATH", "/data/query_templates.txt")
 
-# --- Google Calendar ---
 GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "primary")
 GOOGLE_CREDENTIALS_PATH = os.getenv("GOOGLE_CREDENTIALS_PATH", "/data/credentials.json")
 GOOGLE_TOKEN_PATH = os.getenv("GOOGLE_TOKEN_PATH", "/data/token.json")

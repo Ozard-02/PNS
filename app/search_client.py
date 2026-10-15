@@ -1,39 +1,31 @@
 """
 Step 3 del workflow: ricerca eventi/concerti.
 
-Architettura a due fasi (sostituisce il precedente approccio con Gemini Search Grounding,
-che richiede un account Google Cloud con billing collegato anche solo per la quota gratuita):
-
-  Fase A - RICERCA (online): Tavily API cerca sul web e ritorna risultati puliti
-            (titolo pagina, snippet, URL). Free tier: 1000 query/mese, nessuna carta richiesta.
-
-  Fase B - INTERPRETAZIONE (online ma nessun tool di ricerca attivo): un LLM (Gemini o Groq,
-            selezionabile con INTERPRETER_ENGINE) legge i risultati grezzi di Tavily e li
-            trasforma nel JSON strutturato richiesto dal resto del sistema.
-
-Questo approccio funziona interamente su free tier "puri", senza dover collegare billing
-a nessun account.
+Fase A - RICERCA (online): fetch diretto via DuckDuckGo HTML, senza API key.
+Fase B - INTERPRETAZIONE (online): OpenRouter (modello :free) struttura i risultati in JSON.
 """
 import difflib
 import json
 import re
+import time
 from datetime import datetime, timedelta
+from urllib.parse import parse_qs, urlparse
 
-from tavily import TavilyClient
+import requests
+from bs4 import BeautifulSoup
 
 from config import (
-    TAVILY_API_KEY,
-    TAVILY_MAX_RESULTS,
-    LOCATION,
+    SEARCH_MAX_RESULTS,
     SEARCH_RADIUS_DAYS,
-    INTERPRETER_ENGINE,
-    GEMINI_API_KEY,
-    GEMINI_PROFILE_MODEL,
-    GROQ_API_KEY,
-    GROQ_MODEL,
+    QUERY_TEMPLATES_PATH,
 )
+from llm_client import chiama_llm, LLMResponseError
+from query_store import build_queries
 
 MAX_INPUT_CHARS = 25000
+# Risultati grezzi per chiamata LLM: i modelli free rispondono vuoto (content null)
+# ai prompt troppo lunghi (verificato: ~10k char OK, ~27k char sempre vuoto).
+CHUNK_SIZE = 4
 
 
 def _limita_input(testo: str) -> str:
@@ -49,7 +41,7 @@ def _limita_input(testo: str) -> str:
         troncato.append(line)
     n_tagliati = lines.count("--- Risultato") - troncato.count("--- Risultato")
     if n_tagliati > 0:
-        print(f"[search_client] Input troncato a ~{MAX_INPUT_CHARS} caratteri: scartati {n_tagliati} risultati per rispettare il limite TPM di Groq.")
+        print(f"[search_client] Input troncato a ~{MAX_INPUT_CHARS} caratteri: scartati {n_tagliati} risultati per rispettare i limiti del modello.")
     return "\n".join(troncato)
 
 
@@ -65,7 +57,8 @@ blocco markdown ```), con questa struttura per ogni evento trovato:
     "link_info": "string - URL per biglietti o info",
     "genere_categoria": "string - es. Rock, Teatro, Jazz, ecc.",
     "punteggio_predetto": "numero float da 1.0 a 10.0",
-    "motivazione_punteggio": "string - breve frase che spiega il voto basato sul profilo utente"
+    "motivazione_punteggio": "string - UNA sola frase breve e concisa che spiega il voto (niente fronzoli)",
+    "fonte_risultato": "numero intero OBBLIGATORIO: il numero N del --- Risultato N --- da cui hai ricavato questo evento"
   }
 ]
 
@@ -74,47 +67,112 @@ un array vuoto: []. NON inventare eventi che non sono chiaramente menzionati nei
 """
 
 
-def _build_queries() -> list[str]:
-    oggi_dt = datetime.now()
-    fine_dt = oggi_dt + timedelta(days=SEARCH_RADIUS_DAYS)
-    oggi = oggi_dt.strftime("%Y-%m-%d")
-    fine = fine_dt.strftime("%Y-%m-%d")
-    mese_anno = oggi_dt.strftime('%B %Y')
-    return [
-        f"concerti spettacoli musical teatro {LOCATION} {mese_anno} dal {oggi} al {fine}",
-        f"eventi underground indie alternativi nicchia piccoli locali {LOCATION} {mese_anno}",
-        f"feste sagre mercatini mostre gratuiti ingresso libero {LOCATION} {mese_anno}",
-    ]
+def _build_queries() -> list[tuple[str, str]]:
+    """Coppie (template, query renderizzata) dai template in /data/query_templates.txt."""
+    return build_queries()
 
 
-def _cerca_con_tavily() -> list[dict]:
-    """Fase A: interroga Tavily con più query, aggrega e deduplica per URL."""
-    client = TavilyClient(api_key=TAVILY_API_KEY)
+DDG_URL = "https://html.duckduckgo.com/html/"
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+    )
+}
+FETCH_TIMEOUT = 15
+
+
+def _url_reale_ddg(href: str) -> str:
+    """DuckDuckGo a volte restituisce redirect interni: estrae l'URL di destinazione."""
+    if "uddg=" in href:
+        try:
+            return parse_qs(urlparse(href).query)["uddg"][0]
+        except (KeyError, IndexError):
+            pass
+    return href
+
+
+def _scarica_testo(url: str, fallback: str = "") -> str:
+    """Scarica una pagina e ne restituisce il testo pulito (max ~1500 char)."""
+    try:
+        pagina = requests.get(url, headers=HEADERS, timeout=FETCH_TIMEOUT)
+        pagina.raise_for_status()
+        testo = BeautifulSoup(pagina.text, "html.parser").get_text(separator=" ", strip=True)
+        testo = re.sub(r"\s+", " ", testo)
+        return testo[:1500] or fallback
+    except Exception as e:
+        print(f"[search_client] Impossibile scaricare {url[:80]}: {e}")
+        return fallback
+
+
+def _scarica_links_ddg(query: str) -> list:
+    """Scarica la pagina DDG e ritorna i link risultato (max SEARCH_MAX_RESULTS).
+
+    DuckDuckGo risponde 202 (challenge anti-bot) alle query troppo lunghe: un retry
+    dopo 3s, poi la query è scartata con un hint ad accorciare il template.
+    """
+    for tentativo in (1, 2):
+        try:
+            pagina = requests.get(
+                DDG_URL, params={"q": query}, headers=HEADERS, timeout=FETCH_TIMEOUT
+            )
+            if pagina.status_code == 202:
+                print(f"[search_client] DuckDuckGo challenge (202, tentativo {tentativo}/2): "
+                      f"query forse troppo lunga, riprovo tra 3s...")
+                time.sleep(3)
+                continue
+            pagina.raise_for_status()
+            soup = BeautifulSoup(pagina.text, "html.parser")
+            return soup.select("a.result__a")[:SEARCH_MAX_RESULTS]
+        except Exception as e:
+            print(f"[search_client] Errore nella query '{query[:50]}...': {e}")
+            return []
+    print(f"[search_client] Query scartata dopo challenge ripetuti: '{query[:60]}...' "
+          f"(accorcia il template in {QUERY_TEMPLATES_PATH})")
+    return []
+
+
+def _cerca_con_duckduckgo() -> list[dict]:
+    """Fase A: interroga DuckDuckGo HTML con più query, aggrega e deduplica per URL.
+
+    Ogni risultato è taggato con 'template_origine' (il template che l'ha trovato,
+    primo ritrovamento vince): serve al query_engine per imparare quali query
+    portano eventi graditi. Merge/dedup conservano l'origine copiando i dict.
+    """
     visti = set()
     risultati_totali = []
 
-    for query in _build_queries():
+    for template, query in _build_queries():
+        links = _scarica_links_ddg(query)
         try:
-            risposta = client.search(
-                query=query,
-                max_results=TAVILY_MAX_RESULTS,
-                search_depth="advanced",
-                include_answer=False,
-            )
-            for r in risposta.get("results", []):
-                url = r.get("url", "")
-                if url not in visti:
-                    visti.add(url)
-                    risultati_totali.append({
-                        "titolo_pagina": r.get("title", ""),
-                        "url": url,
-                        "contenuto": r.get("content", ""),
-                    })
+            for a in links:
+                url = _url_reale_ddg(a.get("href", ""))
+                titolo = a.get_text(strip=True)
+                if not url or url in visti:
+                    continue
+                visti.add(url)
+                snippet_tag = a.find_parent("div", class_="result")
+                snippet = (
+                    snippet_tag.get_text(separator=" ", strip=True)[:500]
+                    if snippet_tag else ""
+                )
+                risultati_totali.append({
+                    "titolo_pagina": titolo,
+                    "url": url,
+                    "contenuto": _scarica_testo(url, fallback=snippet),
+                    "template_origine": template,
+                })
         except Exception as e:
             print(f"[search_client] Errore nella query '{query[:50]}...': {e}")
             continue
+        time.sleep(1)
 
     return risultati_totali
+
+
+def _spezza_in_chunk(risultati: list[dict], n: int = CHUNK_SIZE) -> list[list[dict]]:
+    """Divide i risultati grezzi in blocchi da n (prompt piccoli = risposte affidabili)."""
+    return [risultati[i:i + n] for i in range(0, len(risultati), n)]
 
 
 def _formatta_risultati_grezzi(risultati: list[dict]) -> str:
@@ -187,6 +245,7 @@ Procedura obbligatoria per ogni possibile evento:
 4. Se manca uno qualsiasi dei requisiti precedenti, scarta l'evento.
 5. Se più risultati descrivono lo stesso evento, mantieni una sola occorrenza scegliendo quella con le informazioni più complete.
 6. Solo dopo assegna un punteggio di gradimento da 1 a 10 basandoti sul profilo utente.
+7. Indica in fonte_risultato il numero del risultato grezzo da cui hai ricavato l'evento.
 
 Non inventare informazioni. Se data, luogo o tipologia dell'evento non sono chiaramente presenti nei risultati, scarta l'evento.
 
@@ -218,30 +277,6 @@ def _estrai_json(testo: str) -> list[dict]:
             except json.JSONDecodeError:
                 pass
         raise
-
-
-def _interpreta_con_gemini(prompt: str) -> str:
-    from google import genai
-
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    response = client.models.generate_content(
-        model=GEMINI_PROFILE_MODEL,
-        contents=prompt,
-    )
-    return response.text.strip()
-
-
-def _interpreta_con_groq(prompt: str) -> str:
-    from groq import Groq
-
-    client = Groq(api_key=GROQ_API_KEY)
-    completion = client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-        max_tokens=2000,
-    )
-    return completion.choices[0].message.content.strip()
 
 
 def _filtra_per_data_valida(eventi: list[dict]) -> list[dict]:
@@ -429,39 +464,49 @@ def _deduplica_eventi(eventi: list[dict]) -> list[dict]:
 
 def cerca_eventi(profilo_utente: str) -> list[dict]:
     """
-    Punto di ingresso principale: esegue la ricerca web (Tavily) e poi l'interpretazione
-    (Gemini o Groq) per produrre la lista di eventi strutturati.
+    Punto di ingresso principale: esegue la ricerca web (fetch diretto) e poi
+    l'interpretazione (OpenRouter) per produrre la lista di eventi strutturati.
     """
     # Fase A: ricerca web
-    risultati_grezzi = _cerca_con_tavily()
-    print(f"[search_client] Tavily ha restituito {len(risultati_grezzi)} risultati grezzi.")
+    risultati_grezzi = _cerca_con_duckduckgo()
+    print(f"[search_client] La ricerca web ha restituito {len(risultati_grezzi)} risultati grezzi.")
 
     if not risultati_grezzi:
         return []
 
-    # Fase B: interpretazione e strutturazione JSON
-    risultati_formattati = _limita_input(_formatta_risultati_grezzi(risultati_grezzi))
-    prompt = _build_prompt_interpretazione(profilo_utente, risultati_formattati)
-
-    if INTERPRETER_ENGINE == "groq":
-        testo_risposta = _interpreta_con_groq(prompt)
-    elif INTERPRETER_ENGINE == "gemini":
-        testo_risposta = _interpreta_con_gemini(prompt)
-    else:
-        raise ValueError(
-            f"INTERPRETER_ENGINE non valido: {INTERPRETER_ENGINE!r} (usa 'gemini' o 'groq')"
-        )
-
-    try:
-        eventi = _estrai_json(testo_risposta)
-    except (json.JSONDecodeError, IndexError) as e:
-        print(f"[search_client] Errore nel parsing della risposta: {e}")
-        print(f"[search_client] Risposta grezza:\n{testo_risposta}")
-        return []
-
-    if not isinstance(eventi, list):
-        print("[search_client] La risposta non è una lista JSON come atteso.")
-        return []
+    # Fase B: interpretazione e strutturazione JSON, un chunk alla volta.
+    # I modelli free rispondono vuoto ai prompt troppo lunghi: chunk piccoli
+    # (~4 risultati) restano nella zona verificata come affidabile. Un chunk
+    # fallito non blocca gli altri; merge/dedup a valle gestiscono le sovrapposizioni.
+    eventi = []
+    chunks = _spezza_in_chunk(risultati_grezzi)
+    for n, chunk in enumerate(chunks, 1):
+        formattati = _limita_input(_formatta_risultati_grezzi(chunk))
+        prompt = _build_prompt_interpretazione(profilo_utente, formattati)
+        try:
+            testo_risposta = chiama_llm(prompt, max_tokens=3000, temperature=0.2)
+        except (LLMResponseError, requests.HTTPError) as e:
+            print(f"[search_client] Chunk {n}/{len(chunks)} saltato (LLM non disponibile: {e}).")
+            continue
+        try:
+            parziali = _estrai_json(testo_risposta)
+        except (json.JSONDecodeError, IndexError) as e:
+            print(f"[search_client] Chunk {n}/{len(chunks)} scartato (parse: {e}).")
+            continue
+        if not isinstance(parziali, list):
+            print(f"[search_client] Chunk {n}/{len(chunks)} scartato (non è una lista JSON).")
+            continue
+        print(f"[search_client] Chunk {n}/{len(chunks)}: {len(parziali)} eventi.")
+        # Provenance: il modello indica fonte_risultato (indice 1-based nel chunk);
+        # qui lo si traduce nel template che ha trovato quel risultato grezzo.
+        # Indici mancanti/fuori range -> origine ignota (None), mai un crash.
+        mappa_fonti = {i + 1: r.get("template_origine") for i, r in enumerate(chunk)}
+        for ev in parziali:
+            if isinstance(ev, dict):
+                fonte = ev.pop("fonte_risultato", None)
+                if isinstance(fonte, int) and fonte in mappa_fonti:
+                    ev["template_origine"] = mappa_fonti[fonte]
+        eventi.extend(parziali)
 
     eventi_filtrati = _filtra_per_data_valida(eventi)
     print(

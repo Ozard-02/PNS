@@ -6,8 +6,9 @@ from db import (
     get_feedback_da_data,
     salva_profilo,
     get_ultimo_profilo,
+    get_data_ultimo_profilo,
 )
-from config import PROFILE_ENGINE, PROFILE_FILE_PATH, PROFILE_HISTORY_PATH
+from llm_client import chiama_llm
 
 MESI_ITALIANI = [
     "", "Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno",
@@ -38,7 +39,7 @@ Regole:
   "elettronica","enogastronomia", "hardcore", "dj set").
 - Sii OPINIONATO: parla di ciò che piace e NON piace all'utente in modo chiaro.
 - NON fare riferimenti a singoli eventi specifici: parla solo di tendenze generali.
-- Sii sintetico: massimo 8-10 frasi, in formato elenco puntato.
+- Sii sintetico e conciso (niente fronzoli): massimo 8-10 frasi brevi, in formato elenco puntato.
 - Scrivi in italiano, in terza persona (es. "L'utente apprezza particolarmente...").
 - Se i nuovi feedback confermano le tendenze esistenti, limitati a rafforzarle.
 - Se i nuovi feedback contraddicono il profilo precedente, dai più peso ai nuovi dati.
@@ -63,7 +64,7 @@ Regole:
   "elettronica", "teatro sperimentale", "enogastronomia", "hardcore", "dj set").
 - Sii OPINIONATO: parla di ciò che piace e NON piace all'utente in modo chiaro.
 - NON fare riferimenti a singoli eventi specifici: parla solo di tendenze generali.
-- Sii sintetico: massimo 8-10 frasi, in formato elenco puntato.
+- Sii sintetico e conciso (niente fronzoli): massimo 8-10 frasi brevi, in formato elenco puntato.
 - Scrivi in italiano, in terza persona (es. "L'utente apprezza particolarmente...").
 - NON inventare dati che non sono presenti nei feedback forniti.
 - Rispondi SOLO con il profilo, senza preamboli o commenti aggiuntivi.
@@ -105,85 +106,15 @@ def _format_feedback_per_prompt(feedback: list[dict]) -> str:
     return "\n".join(righe)
 
 
-def _genera_con_gemini(prompt_completo: str) -> str:
-    from google import genai
-    from config import GEMINI_API_KEY, GEMINI_PROFILE_MODEL
-
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    response = client.models.generate_content(
-        model=GEMINI_PROFILE_MODEL,
-        contents=prompt_completo,
-    )
-    return response.text.strip()
-
-
-def _genera_con_groq(prompt_completo: str) -> str:
-    from groq import Groq
-    from config import GROQ_API_KEY, GROQ_MODEL
-
-    client = Groq(api_key=GROQ_API_KEY)
-    parts = prompt_completo.split("--- STATISTICHE", 1)
-    if len(parts) == 2:
-        system_content = parts[0].strip()
-        user_content = "--- STATISTICHE" + parts[1]
-    else:
-        system_content = prompt_completo
-        user_content = prompt_completo
-
-    completion = client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=[
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_content},
-        ],
-        temperature=0.3,
-        max_tokens=500,
-    )
-    return completion.choices[0].message.content.strip()
-
-
-def _chiama_llm(prompt: str) -> str:
-    if PROFILE_ENGINE == "groq":
-        return _genera_con_groq(prompt)
-    elif PROFILE_ENGINE == "gemini":
-        return _genera_con_gemini(prompt)
-    else:
-        raise ValueError(f"PROFILE_ENGINE non valido: {PROFILE_ENGINE!r} (usa 'gemini' o 'groq')")
-
-
-def _timestamp_da_file(contenuto: str) -> str | None:
-    """Legge la data dell'ultimo aggiornamento dalla prima riga del profilo."""
-    prima_riga = contenuto.strip().split("\n")[0] if contenuto else ""
-    if prima_riga.startswith("# Aggiornato:"):
-        return prima_riga.split("# Aggiornato:", 1)[1].strip()
-    return None
-
-
-def leggi_profilo_da_file() -> str:
-    """Legge il profilo utente dal file. Se non esiste, lo genera dal DB."""
-    try:
-        with open(PROFILE_FILE_PATH, "r") as f:
-            contenuto = f.read().strip()
-        if contenuto:
-            return contenuto
-    except (FileNotFoundError, IOError):
-        pass
-    return _genera_profilo_iniziale()
-
-
 def _genera_profilo_iniziale() -> str:
-    """Genera il primo profilo: se ci sono feedback nel DB li usa, altrimenti neutro."""
     feedback = get_feedback_recente(limit=999)
     if not feedback:
-        now = datetime.now(timezone.utc)
         profilo = (
-            f"# Aggiornato: {now.isoformat()}\n"
             f"# Profilo iniziale — nessun feedback ancora disponibile.\n\n"
             f"- Nessuna preferenza registrata: l'utente non ha ancora valutato eventi.\n"
             f"- Il profilo verrà aggiornato automaticamente dopo la prima revisione feedback."
         )
-        with open(PROFILE_FILE_PATH, "w") as f:
-            f.write(profilo + "\n")
+        salva_profilo(profilo)
         return profilo
 
     stats = get_feedback_statistics()
@@ -206,38 +137,19 @@ def _genera_profilo_iniziale() -> str:
     )
 
     print("[profile_engine] Generazione profilo iniziale dal DB...")
-    profilo = _chiama_llm(prompt)
-    scrivi_profilo(profilo)
+    profilo = chiama_llm(prompt, max_tokens=2500, temperature=0.3)
     salva_profilo(profilo)
     return profilo
 
 
-def archivia_profilo_precedente(profilo_precedente: str):
-    """Prepend il profilo precedente in profilo_storico.txt con header data."""
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-    header = f"\n\n=== Profilo - {now} ===\n"
-    try:
-        with open(PROFILE_HISTORY_PATH, "r") as f:
-            storico = f.read()
-    except (FileNotFoundError, IOError):
-        storico = ""
-    with open(PROFILE_HISTORY_PATH, "w") as f:
-        f.write(header + profilo_precedente + storico)
-
-
-def scrivi_profilo(contenuto: str):
-    """Sovrascrive profilo_utente.txt con il nuovo contenuto, aggiungendo timestamp."""
-    now = datetime.now(timezone.utc)
-    with open(PROFILE_FILE_PATH, "w") as f:
-        f.write(f"# Aggiornato: {now.isoformat()}\n")
-        f.write(contenuto if contenuto.endswith("\n") else contenuto + "\n")
-
-
 def aggiorna_profilo_da_feedback():
-    """Legge i nuovi feedback dall'ultimo aggiornamento e aggiorna il profilo."""
-    profilo_corrente = leggi_profilo_da_file()
-    ultimo_aggiornamento = _timestamp_da_file(profilo_corrente)
+    profilo_corrente = get_ultimo_profilo()
 
+    if profilo_corrente is None:
+        _genera_profilo_iniziale()
+        return
+
+    ultimo_aggiornamento = get_data_ultimo_profilo()
     if ultimo_aggiornamento:
         nuovi_feedback = get_feedback_da_data(ultimo_aggiornamento)
     else:
@@ -269,22 +181,13 @@ def aggiorna_profilo_da_feedback():
     )
 
     print("[profile_engine] Aggiornamento profilo utente in corso...")
-    nuovo_profilo = _chiama_llm(prompt_completo)
-
-    archivia_profilo_precedente(profilo_corrente)
-    scrivi_profilo(nuovo_profilo)
-
+    nuovo_profilo = chiama_llm(prompt_completo, max_tokens=2500, temperature=0.3)
     salva_profilo(nuovo_profilo)
     print("[profile_engine] Profilo aggiornato e salvato.")
 
 
 def genera_profilo_utente() -> str:
-    """Wrapper per main.py: restituisce il profilo corrente dal file."""
-    return leggi_profilo_da_file()
-
-
-def get_profilo_corrente() -> str:
     profilo = get_ultimo_profilo()
     if profilo:
         return profilo
-    return "Nessun profilo storico disponibile ancora: prima esecuzione del sistema."
+    return _genera_profilo_iniziale()

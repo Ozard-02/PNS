@@ -1,12 +1,12 @@
 """
-Script di TEST LOCALE (senza Docker) per verificare che la chiamata a Gemini
-con Google Search Grounding funzioni correttamente.
+Script di TEST LOCALE (senza Docker) per verificare che la pipeline
+ricerca web + OpenRouter funzioni correttamente.
 
 Non tocca il database né Google Calendar: stampa solo il risultato a schermo.
 
 Uso:
     1. pip install -r requirements.txt
-    2. export GEMINI_API_KEY="la-tua-chiave"   (oppure crea un file .env e usa python-dotenv)
+    2. export OPENROUTER_API_KEY="la-tua-chiave"   (oppure crea un file .env e usa python-dotenv)
     3. python test_search_locale.py
 """
 import os
@@ -26,10 +26,10 @@ from search_client import cerca_eventi  # noqa: E402
 
 
 def main():
-    if not os.getenv("GEMINI_API_KEY"):
-        print("ERRORE: variabile GEMINI_API_KEY non impostata.")
-        print("Esegui: export GEMINI_API_KEY='la-tua-chiave'  (Linux/Mac)")
-        print("oppure: $env:GEMINI_API_KEY='la-tua-chiave'    (Windows PowerShell)")
+    if not os.getenv("OPENROUTER_API_KEY"):
+        print("ERRORE: variabile OPENROUTER_API_KEY non impostata.")
+        print("Esegui: export OPENROUTER_API_KEY='la-tua-chiave'  (Linux/Mac)")
+        print("oppure: $env:OPENROUTER_API_KEY='la-tua-chiave'    (Windows PowerShell)")
         sys.exit(1)
 
     profilo_di_test = (

@@ -10,17 +10,20 @@ a Docker container.
 Cron (daily)
   -> profile_engine   : reads feedback history from SQLite, aggregates per-genre
                          statistics, generates an updated user-preference summary
-                         (Groq or Gemini, no web access), enriched with seasonal
+                         (OpenRouter free model, no web access), enriched with seasonal
                          context and correction-direction analysis (↑/↓/→)
-  -> search_client     : Tavily searches the web for events, then an LLM (Groq or
-                          Gemini) structures the raw results into JSON, scored against
+  -> search_client     : DuckDuckGo HTML fetch searches the web for events (no API key),
+                          then OpenRouter structures the raw results into JSON, scored against
                           the user profile; multi-date events (same title + venue) are
                           merged — consecutive dates become a single multi-day event,
                           non-consecutive ones are numbered (1/N)
   -> db                : new events are stored with optional data_fine column for
-                          multi-day events, duplicates are skipped
+                          multi-day events, duplicates are skipped; each event records
+                          which query template found it (query_origine)
   -> calendar_client    : new events are pushed to Google Calendar; multi-day events
                           are created as all-day blocks spanning data → data_fine
+  -> query_engine       : proposes query template improvements from feedback
+                          (non-fatal step, proposals only — you accept/reject in the TUI)
 ```
 
 The scoring engine improves over time: correcting an event's score through the feedback
@@ -29,10 +32,8 @@ CLI feeds back into the next day's profile generation.
 ## Requirements
 
 - Docker and Docker Compose
-- Gemini API key (https://aistudio.google.com/apikey)
-- Groq API key (https://console.groq.com/keys) - used for profile generation and/or
-  result interpretation, selectable independently via env vars
-- Tavily API key (https://tavily.com) - web search, free tier does not require billing
+- OpenRouter API key (https://openrouter.ai/keys, free tier, no billing required for
+  `:free` models) - used for profile generation and result interpretation
 - A Google Cloud project with the Calendar API enabled, plus an OAuth2 client
   (Desktop app type)
 
@@ -82,13 +83,27 @@ docker exec -it ai-event-tracker python /app/feedback_cli.py --set <event_id> <s
 
 The next run reads this feedback and adjusts the generated user profile accordingly.
 
+## Query templates
+
+Search queries live in `/data/query_templates.txt` (one per line, `#` comments,
+placeholders `{location} {mese_anno} {oggi} {fine}`) — created with defaults on
+first run, survives rebuilds. Edit it by hand (`docker cp` it out and back) or
+let the model propose improvements and evaluate them in the TUI:
+
+```bash
+docker exec -it ai-event-tracker python /app/feedback_cli.py --queries    # show templates + per-query stats
+docker exec -it ai-event-tracker python /app/feedback_cli.py --propose    # generate proposals now
+docker exec -it ai-event-tracker python /app/feedback_cli.py --proposals  # accept/reject loop
+```
+
+The daily run auto-generates proposals when there are ≥3 new rated events and no
+pending proposals; nothing is applied without your approval.
+
 ## Local testing without Docker
 
 ```bash
 pip install -r requirements.txt
-export GEMINI_API_KEY="..."
-export TAVILY_API_KEY="..."
-export GROQ_API_KEY="..."
+export OPENROUTER_API_KEY="..."
 python test_search_locale.py
 ```
 
@@ -99,17 +114,12 @@ Google Calendar.
 
 | Variable | Description | Default |
 |---|---|---|
-| `GEMINI_API_KEY` | Gemini API key | - |
-| `GROQ_API_KEY` | Groq API key | - |
-| `TAVILY_API_KEY` | Tavily API key | - |
-| `PROFILE_ENGINE` | Backend for profile generation: `groq` or `gemini` | `groq` |
-| `INTERPRETER_ENGINE` | Backend for structuring search results: `groq` or `gemini` | value of `PROFILE_ENGINE` |
-| `GEMINI_SEARCH_MODEL` | Gemini model used where applicable | `gemini-flash-latest` |
-| `GEMINI_PROFILE_MODEL` | Gemini model used for profile/interpretation | `gemini-flash-latest` |
-| `GROQ_MODEL` | Groq model used for profile/interpretation | `llama-3.3-70b-versatile` |
+| `OPENROUTER_API_KEY` | OpenRouter API key (`:free` models, no billing) | - |
+| `OPENROUTER_MODEL` | Model for profile generation + result interpretation | `nvidia/nemotron-3-super-120b-a12b:free` |
 | `EVENT_LOCATION` | Location string used in search queries | - |
 | `SEARCH_RADIUS_DAYS` | How many days ahead to search | `14` |
-| `TAVILY_MAX_RESULTS` | Max results per Tavily search | `10` |
+| `SEARCH_MAX_RESULTS` | Max results per web-search query | `5` |
+| `QUERY_TEMPLATES_PATH` | Editable search query templates file | `/data/query_templates.txt` |
 | `GOOGLE_CALENDAR_ID` | Target calendar ID | `primary` |
 | `DB_PATH` | SQLite file path inside the container | `/data/eventi.db` |
 
@@ -121,9 +131,12 @@ app/
   db.py               SQLite schema and CRUD helpers
   profile_engine.py    reads feedback history + per-genre statistics, generates
                          the user profile with seasonal context
-  search_client.py     Tavily search + LLM-based structuring, with date validation
-                         and multi-date event merging
+  search_client.py     DuckDuckGo fetch + OpenRouter structuring, with date validation,
+                         multi-date event merging and query-origin tagging
+  query_store.py       load/save/validate search query templates (persistent file)
+  query_engine.py      proposes query template improvements from feedback
   calendar_client.py   Google Calendar integration, supports multi-day all-day events
+  llm_client.py        single OpenRouter caller (profile + interpretation)
   feedback_cli.py       CLI to record user feedback on past events
   main.py               orchestrates the daily run
 Dockerfile
@@ -135,11 +148,12 @@ test_search_locale.py   standalone search test, no DB/Calendar side effects
 
 ## Notes
 
-- Free-tier rate limits for Gemini, Groq, and Tavily change periodically; check each
-  provider's documentation if requests start failing with 429 errors.
-- Search Grounding on the Gemini API requires a billing-enabled Google Cloud project
-  even for its free monthly allocation; this project avoids that requirement by using
-  Tavily for search instead.
+- OpenRouter `:free` models have daily/rate limits and availability changes
+  periodically; if requests start failing with 429 errors, switch `OPENROUTER_MODEL`
+  to another `:free` model via env (no code change needed).
+- DuckDuckGo HTML scraping can break if their markup changes or requests get
+  throttled; `search_client.py` skips failed pages/queries and returns `[]` when
+  nothing is found, so a bad day degrades to zero new events instead of a crash.
 - `search_client.py` validates every event's date against the requested search window
   and discards anything out of range or unparsable, independent of what the LLM returns.
 - **Multi-date merging**: after date validation, events with the same title (fuzzy
