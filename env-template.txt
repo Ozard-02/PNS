@@ -7,6 +7,12 @@ OPENROUTER_API_KEY=incolla_qui_la_tua_chiave_openrouter
 # Modello OpenRouter per profilo utente + interpretazione risultati
 OPENROUTER_MODEL=nvidia/nemotron-3-super-120b-a12b:free
 
+# Istanza LLM locale (opzionale, API OpenAI-compatible, es. Unsloth su LAN).
+# Se impostata, viene provata per prima (nessuna quota) con fallback su OpenRouter.
+# LOCAL_LLM_URL=http://192.168.178.138:8888/v1
+# LOCAL_API_KEY=incolla_qui_la_chiave_locale
+# LOCAL_MODEL=unsloth/Qwen3-8B-GGUF
+
 # Ricerca eventi
 EVENT_LOCATION=Inserisci_qui_la_tua_località
 SEARCH_RADIUS_DAYS=14

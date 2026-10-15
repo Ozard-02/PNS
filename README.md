@@ -120,6 +120,9 @@ Google Calendar.
 | `SEARCH_RADIUS_DAYS` | How many days ahead to search | `14` |
 | `SEARCH_MAX_RESULTS` | Max results per web-search query | `5` |
 | `QUERY_TEMPLATES_PATH` | Editable search query templates file | `/data/query_templates.txt` |
+| `LOCAL_LLM_URL` | Local LLM base URL (tried first, OpenRouter fallback) | - |
+| `LOCAL_API_KEY` | Local LLM API key | - |
+| `LOCAL_MODEL` | Local LLM model ID | `unsloth/Qwen3-8B-GGUF` |
 | `GOOGLE_CALENDAR_ID` | Target calendar ID | `primary` |
 | `DB_PATH` | SQLite file path inside the container | `/data/eventi.db` |
 

@@ -6,6 +6,9 @@ services:
     environment:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - OPENROUTER_MODEL=${OPENROUTER_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
+      - LOCAL_LLM_URL=${LOCAL_LLM_URL:-}
+      - LOCAL_API_KEY=${LOCAL_API_KEY:-}
+      - LOCAL_MODEL=${LOCAL_MODEL:-unsloth/Qwen3-8B-GGUF}
       - EVENT_LOCATION=${EVENT_LOCATION:-}
       - SEARCH_RADIUS_DAYS=${SEARCH_RADIUS_DAYS:-14}
       - GOOGLE_CALENDAR_ID=${GOOGLE_CALENDAR_ID:-primary}

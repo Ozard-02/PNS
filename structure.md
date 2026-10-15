@@ -20,7 +20,7 @@ PNS/
 │   ├── main.py                   # Entry point — orchestrates the 6-step workflow
 │   ├── config.py                 # Environment-based configuration (API keys, models, paths)
 │   ├── db.py                     # SQLite layer (schema, CRUD, feedback/stats, query proposals)
-│   ├── llm_client.py             # Single OpenRouter caller used by profile_engine + search_client
+│   ├── llm_client.py             # LLM caller: local instance first, OpenRouter fallback
 │   ├── profile_engine.py         # Step 2: generates user profile from feedback history
 │   ├── query_store.py            # Load/save/validate search query templates (/data file)
 │   ├── query_engine.py           # Step 6: proposes query improvements from feedback (pending review)
@@ -60,6 +60,9 @@ PNS/
 | `DB_PATH`              | `/data/eventi.db`                             | SQLite file path                     |
 | `SEARCH_MAX_RESULTS`   | `5`                                           | Max results per web-search query     |
 | `QUERY_TEMPLATES_PATH` | `/data/query_templates.txt`                   | Editable search query templates file |
+| `LOCAL_LLM_URL`        | —                                             | Local LLM base URL (OpenAI-compatible, tried first, no quota) |
+| `LOCAL_API_KEY`        | —                                             | Local LLM API key                    |
+| `LOCAL_MODEL`          | `unsloth/Qwen3-8B-GGUF`                       | Local LLM model ID                   |
 
 ## Scheduling
 
